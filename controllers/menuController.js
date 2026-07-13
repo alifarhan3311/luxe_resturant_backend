@@ -66,8 +66,10 @@ exports.getChefSpecials = asyncHandler(async (req, res) => {
 // @route   POST /api/menu
 // @access  Private/Admin
 exports.createMenuItem = asyncHandler(async (req, res, next) => {
+  // Cloudinary: req.files[].path = full HTTPS URL
+  // Local dev with diskStorage: req.files[].path = local filesystem path
   if (req.files && req.files.length) {
-    req.body.images = req.files.map((f) => `/uploads/${f.filename}`);
+    req.body.images = req.files.map((f) => f.path);
   }
 
   // A03 — whitelist fields to prevent mass-assignment
@@ -106,7 +108,7 @@ exports.createMenuItem = asyncHandler(async (req, res, next) => {
 // @access  Private/Admin
 exports.updateMenuItem = asyncHandler(async (req, res, next) => {
   if (req.files && req.files.length) {
-    req.body.images = req.files.map((f) => `/uploads/${f.filename}`);
+    req.body.images = req.files.map((f) => f.path);
   }
 
   // A03 — whitelist updatable fields

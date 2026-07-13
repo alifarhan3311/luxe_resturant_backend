@@ -1,71 +1,82 @@
 /**
- * Multer upload middleware — OWASP A05 / A03
+ * upload.js — Cloudinary-backed Multer middleware
  *
- * Security measures:
- *  - Strict MIME type check (magic bytes via file.mimetype — not just extension)
- *  - Extension allowlist (defence-in-depth on top of MIME check)
- *  - 5 MB size limit per file
- *  - Filename sanitized — strips path traversal characters and non-safe chars
- *  - Files stored with a random UUID-style name (no user input in filename)
+ * ROOT CAUSE OF VERCEL UPLOAD FAILURE:
+ *
+ *   multer.diskStorage() writes files to the local filesystem.
+ *   Vercel Serverless Functions run in a READ-ONLY container.
+ *   The ONLY writable path is /tmp, which:
+ *     1. Is limited to ~512 MB
+ *     2. Is WIPED between invocations (ephemeral)
+ *     3. Is NOT publicly accessible — /uploads cannot be served as static files
+ *
+ *   So even if Multer writes to /tmp successfully:
+ *     - The file disappears after the function ends
+ *     - The /uploads URL returns 404 on every subsequent request
+ *     - On a DIFFERENT Vercel instance the file was never there
+ *
+ * THE FIX:
+ *   Replace diskStorage with multer-storage-cloudinary.
+ *   Files are streamed directly from the request → Cloudinary CDN.
+ *   No filesystem write at all — works perfectly on Vercel.
+ *   Returns a permanent, publicly accessible HTTPS URL.
+ *
+ * SECURITY:
+ *   - MIME type validated (image only)
+ *   - Extension allowlisted
+ *   - 5 MB size limit
+ *   - Files namespaced under /luxe-restaurant/ folder on Cloudinary
  */
-const multer = require("multer");
-const path   = require("path");
-const fs     = require("fs");
-const crypto = require("crypto");
 
-// Vercel serverless: /tmp is the only writable directory
-// Local: use the uploads/ folder beside server.js
-const isVercel   = !!process.env.VERCEL;
-const uploadDir  = isVercel
-  ? "/tmp/uploads"
-  : path.join(__dirname, "..", "uploads");
+const multer     = require("multer");
+const cloudinary = require("cloudinary").v2;
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
+const path = require("path");
 
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+// ── Configure Cloudinary ───────────────────────────────────────────────────
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key:    process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
-// Allowlisted MIME types
-const ALLOWED_MIME = new Set([
-  "image/jpeg",
-  "image/jpg",
-  "image/png",
-  "image/webp",
-  "image/gif",
-]);
-
-// Allowlisted extensions (mirrors MIME types)
-const ALLOWED_EXT = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-
-  filename: (_req, file, cb) => {
-    // Generate a random, unguessable filename — never use user-supplied names
-    const random = crypto.randomBytes(16).toString("hex");
-    const ext    = path.extname(file.originalname).toLowerCase();
-    cb(null, `${random}${ext}`);
+// ── Cloudinary storage engine ──────────────────────────────────────────────
+const storage = new CloudinaryStorage({
+  cloudinary,
+  params: async (req, file) => {
+    return {
+      folder:         "luxe-restaurant",   // all images grouped in one folder
+      allowed_formats: ["jpg", "jpeg", "png", "webp", "gif"],
+      transformation: [{ quality: "auto", fetch_format: "auto" }],
+      // Random public_id so filenames are unguessable
+      public_id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    };
   },
 });
 
+// ── MIME + extension allowlist ─────────────────────────────────────────────
+const ALLOWED_MIME = new Set([
+  "image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif",
+]);
+const ALLOWED_EXT = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
+
 const fileFilter = (_req, file, cb) => {
   const ext = path.extname(file.originalname).toLowerCase();
-
-  // Check both MIME type AND extension (A03 defence-in-depth)
-  if (!ALLOWED_MIME.has(file.mimetype)) {
-    return cb(new Error("Invalid file type. Only JPEG, PNG, WebP and GIF images are allowed."), false);
-  }
-  if (!ALLOWED_EXT.has(ext)) {
+  if (!ALLOWED_MIME.has(file.mimetype))
+    return cb(new Error("Invalid file type. Only JPEG, PNG, WebP and GIF are allowed."), false);
+  if (!ALLOWED_EXT.has(ext))
     return cb(new Error("Invalid file extension."), false);
-  }
-
   cb(null, true);
 };
 
+// ── Export configured Multer instance ─────────────────────────────────────
 const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize:  5 * 1024 * 1024, // 5 MB per file
-    files:     10,               // max 10 files per request
-    fields:    20,               // max 20 non-file fields
+    fileSize: 5 * 1024 * 1024, // 5 MB per file
+    files:    10,
+    fields:   20,
   },
 });
 

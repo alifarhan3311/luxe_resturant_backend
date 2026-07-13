@@ -13,8 +13,9 @@ router.put(
   uploadLimiter,
   upload.fields([{ name: "logo", maxCount: 1 }, { name: "favicon", maxCount: 1 }]),
   (req, res, next) => {
-    if (req.files?.logo)    req.body.logo    = `/uploads/${req.files.logo[0].filename}`;
-    if (req.files?.favicon) req.body.favicon = `/uploads/${req.files.favicon[0].filename}`;
+    // Cloudinary returns full HTTPS URL in req.files[field][0].path
+    if (req.files?.logo)    req.body.logo    = req.files.logo[0].path;
+    if (req.files?.favicon) req.body.favicon = req.files.favicon[0].path;
     next();
   },
   updateSettings

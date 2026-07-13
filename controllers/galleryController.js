@@ -20,9 +20,10 @@ exports.uploadGalleryImages = asyncHandler(async (req, res, next) => {
 
   const docs = await Gallery.insertMany(
     req.files.map((f) => ({
-      title: req.body.title || "",
+      title:    req.body.title    || "",
       category: req.body.category || "General",
-      image: `/uploads/${f.filename}`,
+      // Cloudinary returns the full HTTPS URL in f.path
+      image:    f.path,
     }))
   );
 

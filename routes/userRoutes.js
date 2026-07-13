@@ -22,7 +22,8 @@ router.put(
   uploadLimiter,
   upload.single("avatar"),
   (req, res, next) => {
-    if (req.file) req.body.avatar = `/uploads/${req.file.filename}`;
+    // Cloudinary returns full HTTPS URL in req.file.path
+    if (req.file) req.body.avatar = req.file.path;
     next();
   },
   updateProfile
