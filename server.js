@@ -1,12 +1,30 @@
+/**
+ * server.js
+ *
+ * ROOT CAUSE FIX (Vercel serverless):
+ *
+ * BEFORE (broken):
+ *   connectDB();          ← fire-and-forget at module load time
+ *   const app = express(); ← app exported immediately, DB may not be ready
+ *   // first request arrives → controller runs → DB not connected → CRASH
+ *
+ * AFTER (fixed):
+ *   connectDB() is removed from module-load scope.
+ *   A `dbConnect` middleware is registered as the VERY FIRST middleware.
+ *   Every incoming request awaits connectDB() before reaching any route.
+ *   connectDB() returns the cached connection instantly on warm invocations,
+ *   so there is no performance penalty after the first cold-start connection.
+ */
+
 require("dotenv").config();
-const express      = require("express");
-const cors         = require("cors");
-const morgan       = require("morgan");
-const helmet       = require("helmet");
-const cookieParser = require("cookie-parser");
+const express       = require("express");
+const cors          = require("cors");
+const morgan        = require("morgan");
+const helmet        = require("helmet");
+const cookieParser  = require("cookie-parser");
 const mongoSanitize = require("express-mongo-sanitize");
-const hpp          = require("hpp");
-const path         = require("path");
+const hpp           = require("hpp");
+const path          = require("path");
 
 const connectDB      = require("./config/db");
 const errorHandler   = require("./middleware/errorHandler");
@@ -27,36 +45,55 @@ const settingsRoutes    = require("./routes/settingsRoutes");
 const userRoutes        = require("./routes/userRoutes");
 const dashboardRoutes   = require("./routes/dashboardRoutes");
 
-connectDB();
-
 const app = express();
 
-// ── OWASP A05 – Security Misconfiguration ──────────────────────────────────
-// Helmet: sets 14 security-related HTTP headers
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX: DB connection middleware — MUST be the very first middleware.
+//
+// Every request awaits connectDB() before proceeding.
+// On cold start  → opens a new connection, caches it, then continues.
+// On warm start  → connectDB() returns the cached conn in ~0ms, then continues.
+// If DB is down  → returns 503 immediately instead of a cryptic Mongoose error.
+// ─────────────────────────────────────────────────────────────────────────────
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    console.error("[DB] Connection failed:", err.message);
+    res.status(503).json({
+      success: false,
+      message: "Database unavailable. Please try again shortly.",
+    });
+  }
+});
+
+// ── Security headers (Helmet) ─────────────────────────────────────────────
 app.use(
   helmet({
-    crossOriginResourcePolicy:  { policy: "cross-origin" }, // allow /uploads images
+    crossOriginResourcePolicy: { policy: "cross-origin" },
     contentSecurityPolicy: {
       directives: {
-        defaultSrc:  ["'self'"],
-        scriptSrc:   ["'self'", "https://js.stripe.com"],
-        frameSrc:    ["'self'", "https://js.stripe.com"],
-        connectSrc:  ["'self'", "https://api.stripe.com"],
-        imgSrc:      ["'self'", "data:", "https://images.unsplash.com", "blob:"],
-        styleSrc:    ["'self'", "'unsafe-inline'"],
-        fontSrc:     ["'self'", "data:"],
-        objectSrc:   ["'none'"],
-        upgradeInsecureRequests: process.env.NODE_ENV === "production" ? [] : null,
+        defaultSrc: ["'self'"],
+        scriptSrc:  ["'self'", "https://js.stripe.com"],
+        frameSrc:   ["'self'", "https://js.stripe.com"],
+        connectSrc: ["'self'", "https://api.stripe.com"],
+        imgSrc:     ["'self'", "data:", "https://images.unsplash.com", "blob:"],
+        styleSrc:   ["'self'", "'unsafe-inline'"],
+        fontSrc:    ["'self'", "data:"],
+        objectSrc:  ["'none'"],
+        upgradeInsecureRequests:
+          process.env.NODE_ENV === "production" ? [] : null,
       },
     },
-    // HSTS — only meaningful in production behind HTTPS
-    strictTransportSecurity: process.env.NODE_ENV === "production"
-      ? { maxAge: 31536000, includeSubDomains: true }
-      : false,
+    strictTransportSecurity:
+      process.env.NODE_ENV === "production"
+        ? { maxAge: 31536000, includeSubDomains: true }
+        : false,
   })
 );
 
-// ── OWASP A07 – CORS locked to client origin ──────────────────────────────
+// ── CORS ──────────────────────────────────────────────────────────────────
 const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:5173")
   .split(",")
   .map((s) => s.trim());
@@ -64,56 +101,53 @@ const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:5173")
 app.use(
   cors({
     origin: (origin, cb) => {
-      // Allow no-origin requests (Postman, mobile) in non-production
       if (!origin && process.env.NODE_ENV !== "production") return cb(null, true);
-      // Allow exact match
       if (allowedOrigins.includes(origin)) return cb(null, true);
-      // Allow all Vercel preview deployments for this project
-      if (origin && origin.match(/https:\/\/luxe-resturant-front-end.*\.vercel\.app$/)) return cb(null, true);
+      if (
+        origin &&
+        origin.match(/https:\/\/luxe-resturant-front-end.*\.vercel\.app$/)
+      )
+        return cb(null, true);
       cb(new Error(`CORS: origin '${origin}' not allowed`));
     },
-    credentials: true,
-    methods:     ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    credentials:    true,
+    methods:        ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
-// ── Body parsing — explicit size limits (A08 – Software/Data Integrity) ───
+// ── Body / Cookie parsing ──────────────────────────────────────────────────
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use(cookieParser());
 
-// ── OWASP A03 – NoSQL Injection ───────────────────────────────────────────
-// Strips $-prefixed keys from req.body, req.query, req.params
+// ── NoSQL injection + HTTP param pollution protection ─────────────────────
 app.use(mongoSanitize({ replaceWith: "_" }));
-
-// ── OWASP A03 – HTTP Parameter Pollution ─────────────────────────────────
 app.use(hpp({ whitelist: ["sort", "fields", "page", "limit", "category"] }));
 
-// ── Logging (dev only — never log sensitive data in production) ───────────
+// ── Dev logging ───────────────────────────────────────────────────────────
 if (process.env.NODE_ENV !== "production") app.use(morgan("dev"));
 
-// ── Static uploads ────────────────────────────────────────────────────────
-// Vercel serverless: filesystem is ephemeral — /uploads not served statically.
-// In production use Cloudinary/S3. Locally we serve from the uploads/ folder.
+// ── Static uploads (local only — Vercel filesystem is read-only) ──────────
 if (!process.env.VERCEL) {
   app.use(
     "/uploads",
     (req, res, next) => {
-      if (req.path.includes("..")) return res.status(400).json({ success: false, message: "Invalid path" });
+      if (req.path.includes(".."))
+        return res.status(400).json({ success: false, message: "Invalid path" });
       next();
     },
     express.static(path.join(__dirname, "uploads"), {
       dotfiles: "deny",
-      maxAge: "1d",
+      maxAge:   "1d",
     })
   );
 }
 
-// ── OWASP A04 – Rate Limiting on all /api routes ──────────────────────────
+// ── Rate limiting ──────────────────────────────────────────────────────────
 app.use("/api", apiLimiter);
 
-// ── Mount routers ─────────────────────────────────────────────────────────
+// ── Routes ────────────────────────────────────────────────────────────────
 app.use("/api/auth",         authRoutes);
 app.use("/api/categories",   categoryRoutes);
 app.use("/api/menu",         menuRoutes);
@@ -128,28 +162,40 @@ app.use("/api/settings",     settingsRoutes);
 app.use("/api/users",        userRoutes);
 app.use("/api/dashboard",    dashboardRoutes);
 
-// Health check — no sensitive info
+// ── Health check ──────────────────────────────────────────────────────────
 app.get("/api/health", (req, res) =>
-  res.json({ success: true, message: "API is running", env: process.env.NODE_ENV })
+  res.json({
+    success: true,
+    message: "API is running",
+    env:     process.env.NODE_ENV,
+    db:      require("mongoose").connection.readyState === 1 ? "connected" : "disconnected",
+  })
 );
 
-// 404 handler for unknown routes
+// ── 404 ───────────────────────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ success: false, message: "Route not found" });
 });
 
+// ── Global error handler ──────────────────────────────────────────────────
 app.use(errorHandler);
 
-// ── Server start ──────────────────────────────────────────────────────────
-// Vercel: exports the app (no app.listen — Vercel handles the port)
-// Local:  starts the HTTP server normally
-if (process.env.VERCEL || process.env.NODE_ENV === "test") {
-  // Serverless — just export the app
+// ── Start / Export ────────────────────────────────────────────────────────
+if (process.env.VERCEL) {
+  // Serverless: Vercel calls the exported handler directly — no listen()
   module.exports = app;
 } else {
-  const PORT = process.env.PORT || 5000;
-  app.listen(PORT, () =>
-    console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`)
-  );
+  // Traditional server: connect DB first, then start listening
+  connectDB()
+    .then(() => {
+      const PORT = process.env.PORT || 5000;
+      app.listen(PORT, () =>
+        console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`)
+      );
+    })
+    .catch((err) => {
+      console.error("Failed to connect to MongoDB:", err.message);
+      process.exit(1);
+    });
   module.exports = app;
 }

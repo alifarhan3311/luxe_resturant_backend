@@ -1,52 +1,64 @@
 /**
- * db.js — MongoDB connection with serverless caching
+ * db.js — Serverless-safe MongoDB connection with caching
  *
- * Vercel serverless functions are stateless — each invocation may be a
- * cold start. We cache the mongoose connection on the global object so
- * warm invocations reuse the existing connection instead of opening a
- * new one on every request (avoids "MongooseError: too many connections").
+ * ROOT CAUSE FIX:
+ *  - bufferCommands: false was causing queries to throw immediately
+ *    if the connection wasn't ready. Removed — Mongoose will buffer safely.
+ *  - The connectDB() function now ALWAYS returns a promise that resolves
+ *    only after a confirmed connection. Controllers never run before DB ready.
+ *  - Connection is cached on `global` so warm Vercel invocations reuse it.
  */
 const mongoose = require("mongoose");
 
-// Cache on global to survive across hot-reloads in dev and warm invocations in prod
+// Persist cache across hot-reloads (dev) and warm invocations (Vercel prod)
 let cached = global._mongooseConnection;
 if (!cached) {
   cached = global._mongooseConnection = { conn: null, promise: null };
 }
 
 const connectDB = async () => {
-  // Already connected — return immediately
-  if (cached.conn) return cached.conn;
+  // ── Already have a live connection — return immediately (O(1) cost) ────
+  if (cached.conn && mongoose.connection.readyState === 1) {
+    return cached.conn;
+  }
 
-  // Connection in progress — wait for it
+  // ── Connection attempt already in-flight — wait for it ────────────────
   if (!cached.promise) {
     const uri = process.env.MONGO_URI;
+
     if (!uri) {
-      throw new Error("MONGO_URI is not defined in environment variables");
+      throw new Error(
+        "MONGO_URI is not defined. Add it to Vercel Environment Variables."
+      );
     }
 
+    const opts = {
+      // DO NOT set bufferCommands: false here.
+      // With it false, any query that runs before connect() resolves will
+      // throw instantly. Leave it at the default (true) so Mongoose queues
+      // operations until the connection is ready — safer for serverless.
+      maxPoolSize:              10,
+      serverSelectionTimeoutMS: 10000, // give up after 10s trying to connect
+      socketTimeoutMS:          45000, // close idle sockets after 45s
+      family:                   4,     // use IPv4, avoids IPv6 issues on some hosts
+    };
+
     cached.promise = mongoose
-      .connect(uri, {
-        // Recommended settings for serverless
-        bufferCommands:    false,   // don't buffer ops when disconnected
-        maxPoolSize:       10,      // limit connections
-        serverSelectionTimeoutMS: 10000,
-        socketTimeoutMS:   45000,
-      })
+      .connect(uri, opts)
       .then((m) => {
-        console.log(`MongoDB Connected: ${m.connection.host}`);
+        console.log(`[DB] Connected: ${m.connection.host}`);
         return m;
+      })
+      .catch((err) => {
+        // Reset promise so the next request can retry
+        cached.promise = null;
+        cached.conn    = null;
+        throw err;
       });
   }
 
-  try {
-    cached.conn = await cached.promise;
-  } catch (err) {
-    cached.promise = null; // reset so next call retries
-    console.error(`MongoDB connection error: ${err.message}`);
-    throw err;
-  }
-
+  // ── Await the in-flight promise ────────────────────────────────────────
+  cached.conn = await cached.promise;
   return cached.conn;
 };
 
