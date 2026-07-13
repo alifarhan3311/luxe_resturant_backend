@@ -57,13 +57,19 @@ app.use(
 );
 
 // ── OWASP A07 – CORS locked to client origin ──────────────────────────────
-const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:5173").split(",").map(s => s.trim());
+const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:5173")
+  .split(",")
+  .map((s) => s.trim());
+
 app.use(
   cors({
     origin: (origin, cb) => {
-      // Allow no-origin requests (mobile/Postman in dev) only outside production
+      // Allow no-origin requests (Postman, mobile) in non-production
       if (!origin && process.env.NODE_ENV !== "production") return cb(null, true);
+      // Allow exact match
       if (allowedOrigins.includes(origin)) return cb(null, true);
+      // Allow all Vercel preview deployments for this project
+      if (origin && origin.match(/https:\/\/luxe-resturant-front-end.*\.vercel\.app$/)) return cb(null, true);
       cb(new Error(`CORS: origin '${origin}' not allowed`));
     },
     credentials: true,
@@ -88,18 +94,21 @@ app.use(hpp({ whitelist: ["sort", "fields", "page", "limit", "category"] }));
 if (process.env.NODE_ENV !== "production") app.use(morgan("dev"));
 
 // ── Static uploads ────────────────────────────────────────────────────────
-app.use(
-  "/uploads",
-  (req, res, next) => {
-    // Prevent path traversal: block any request with ".." in the path
-    if (req.path.includes("..")) return res.status(400).json({ success: false, message: "Invalid path" });
-    next();
-  },
-  express.static(path.join(__dirname, "uploads"), {
-    dotfiles: "deny",           // never serve hidden files
-    maxAge: "1d",
-  })
-);
+// Vercel serverless: filesystem is ephemeral — /uploads not served statically.
+// In production use Cloudinary/S3. Locally we serve from the uploads/ folder.
+if (!process.env.VERCEL) {
+  app.use(
+    "/uploads",
+    (req, res, next) => {
+      if (req.path.includes("..")) return res.status(400).json({ success: false, message: "Invalid path" });
+      next();
+    },
+    express.static(path.join(__dirname, "uploads"), {
+      dotfiles: "deny",
+      maxAge: "1d",
+    })
+  );
+}
 
 // ── OWASP A04 – Rate Limiting on all /api routes ──────────────────────────
 app.use("/api", apiLimiter);
@@ -131,7 +140,16 @@ app.use((req, res) => {
 
 app.use(errorHandler);
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () =>
-  console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`)
-);
+// ── Server start ──────────────────────────────────────────────────────────
+// Vercel: exports the app (no app.listen — Vercel handles the port)
+// Local:  starts the HTTP server normally
+if (process.env.VERCEL || process.env.NODE_ENV === "test") {
+  // Serverless — just export the app
+  module.exports = app;
+} else {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () =>
+    console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`)
+  );
+  module.exports = app;
+}

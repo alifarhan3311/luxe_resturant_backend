@@ -13,7 +13,13 @@ const path   = require("path");
 const fs     = require("fs");
 const crypto = require("crypto");
 
-const uploadDir = path.join(__dirname, "..", "uploads");
+// Vercel serverless: /tmp is the only writable directory
+// Local: use the uploads/ folder beside server.js
+const isVercel   = !!process.env.VERCEL;
+const uploadDir  = isVercel
+  ? "/tmp/uploads"
+  : path.join(__dirname, "..", "uploads");
+
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 // Allowlisted MIME types
