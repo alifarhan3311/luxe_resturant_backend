@@ -115,8 +115,8 @@ exports.logout = asyncHandler(async (req, res) => {
   res.cookie("token", "none", {
     expires:  new Date(Date.now() + 5 * 1000),
     httpOnly: true,
-    secure:   process.env.NODE_ENV === "production",
-    sameSite: "strict",
+    secure:   true,        // must match login cookie settings
+    sameSite: "none",      // cross-origin — must match login cookie settings
   });
   res.status(200).json({ success: true, message: "Logged out successfully" });
 });

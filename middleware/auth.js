@@ -20,14 +20,16 @@ const GENERIC_AUTH_ERROR = "Not authorized to access this route";
 exports.protect = asyncHandler(async (req, res, next) => {
   let token;
 
-  // Prefer httpOnly cookie over Authorization header
-  if (req.cookies?.token && req.cookies.token !== "none") {
-    token = req.cookies.token;
-  } else if (
+  // 1st priority: Authorization header (reliable cross-origin)
+  if (
     req.headers.authorization &&
     req.headers.authorization.startsWith("Bearer ")
   ) {
     token = req.headers.authorization.split(" ")[1];
+  }
+  // 2nd priority: httpOnly cookie (works same-origin or when SameSite=None)
+  else if (req.cookies?.token && req.cookies.token !== "none") {
+    token = req.cookies.token;
   }
 
   if (!token) return next(new ErrorResponse(GENERIC_AUTH_ERROR, 401));

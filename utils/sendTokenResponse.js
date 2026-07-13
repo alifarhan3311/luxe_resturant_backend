@@ -1,24 +1,38 @@
 /**
- * sendTokenResponse — OWASP A02 / A07
+ * sendTokenResponse
  *
- * - JWT stored in httpOnly + Secure + SameSite=Strict cookie (not localStorage)
- * - Token also returned in body ONLY in development (so Postman still works)
- * - In production the body never carries the raw JWT — frontend must rely on cookie
- * - __Secure- prefix added in production so browser rejects cookie over plain HTTP
- * - Only safe user fields returned — never password, loginAttempts, lockUntil etc.
+ * ROOT CAUSE FIX — cross-origin cookie problem:
+ *
+ * Frontend: https://luxe-resturant-front-end.vercel.app
+ * Backend:  https://luxe-resturant-backend.vercel.app
+ *
+ * These are DIFFERENT origins (cross-site). Browser rules for cookies:
+ *
+ *  SameSite=Strict  → cookie NOT sent/set on ANY cross-site request  ← was broken
+ *  SameSite=Lax     → cookie NOT SET by cross-site POST (Set-Cookie blocked) ← also broken
+ *  SameSite=None    → cookie sent/set cross-site BUT requires Secure=true ← CORRECT
+ *
+ * So for cross-origin deployments: sameSite must be "none" + secure must be true.
+ *
+ * Additionally: token is ALWAYS returned in the response body so the frontend
+ * can store it in memory (React state) and send it via Authorization header.
+ * This is the correct pattern when cross-origin httpOnly cookies are unreliable.
  */
 const sendTokenResponse = (user, statusCode, res) => {
-  const token = user.getSignedJwtToken();
+  const token  = user.getSignedJwtToken();
   const isProd = process.env.NODE_ENV === "production";
 
   const cookieOptions = {
-    expires:  new Date(Date.now() + (Number(process.env.JWT_COOKIE_EXPIRE) || 7) * 24 * 60 * 60 * 1000),
-    httpOnly: true,                         // A02: JS cannot read this cookie
-    secure:   isProd,                       // A02: HTTPS only in production
-    sameSite: isProd ? "strict" : "lax",    // A01: CSRF mitigation
+    expires:  new Date(
+      Date.now() + (Number(process.env.JWT_COOKIE_EXPIRE) || 7) * 24 * 60 * 60 * 1000
+    ),
+    httpOnly: true,
+    // cross-origin (different Vercel subdomains) requires SameSite=None + Secure
+    secure:   true,          // always true — Vercel is always HTTPS
+    sameSite: "none",        // allows cross-origin cookie (required for Vercel split deploy)
   };
 
-  // Safe user payload — never include sensitive fields
+  // Safe user fields only — never expose password/tokens
   const userSafe = {
     _id:    user._id,
     name:   user.name,
@@ -28,15 +42,12 @@ const sendTokenResponse = (user, statusCode, res) => {
     avatar: user.avatar,
   };
 
-  const body = { success: true, user: userSafe };
-
-  // Only expose raw JWT in non-production (Postman / dev testing)
-  if (!isProd) body.token = token;
-
+  // Always return token in body — frontend stores in memory + localStorage fallback
+  // httpOnly cookie is set as additional security layer
   res
     .status(statusCode)
     .cookie("token", token, cookieOptions)
-    .json(body);
+    .json({ success: true, token, user: userSafe });
 };
 
 module.exports = sendTokenResponse;

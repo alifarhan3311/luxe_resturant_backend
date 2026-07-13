@@ -101,18 +101,22 @@ const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:5173")
 app.use(
   cors({
     origin: (origin, cb) => {
+      // Allow no-origin (Postman, curl, mobile) in non-production
       if (!origin && process.env.NODE_ENV !== "production") return cb(null, true);
+      // Allow exact origins from CLIENT_URL env var
       if (allowedOrigins.includes(origin)) return cb(null, true);
-      if (
-        origin &&
-        origin.match(/https:\/\/luxe-resturant-front-end.*\.vercel\.app$/)
-      )
+      // Allow all Vercel preview deployments for this project
+      if (origin && /https:\/\/luxe-resturant-front-end.*\.vercel\.app$/.test(origin))
+        return cb(null, true);
+      // Allow localhost on any port for local dev
+      if (origin && /^http:\/\/localhost:\d+$/.test(origin))
         return cb(null, true);
       cb(new Error(`CORS: origin '${origin}' not allowed`));
     },
-    credentials:    true,
+    credentials:    true,           // required for cookies + Authorization header
     methods:        ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    exposedHeaders: ["Set-Cookie"],  // allow browser to read Set-Cookie header
   })
 );
 
