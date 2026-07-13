@@ -77,13 +77,35 @@ app.use(
         defaultSrc: ["'self'"],
         scriptSrc:  ["'self'", "https://js.stripe.com"],
         frameSrc:   ["'self'", "https://js.stripe.com"],
-        connectSrc: ["'self'", "https://api.stripe.com"],
-        imgSrc:     ["'self'", "data:", "https://images.unsplash.com", "blob:"],
+        connectSrc: [
+          "'self'",
+          "https://api.stripe.com",
+          // Allow frontend to call backend API from Vercel
+          "https://luxe-resturant-backend.vercel.app",
+          "https://*.vercel.app",
+          "http://localhost:5000",
+        ],
+        imgSrc: [
+          "'self'",
+          "data:",
+          "blob:",
+          // Unsplash (seeded menu/gallery images)
+          "https://images.unsplash.com",
+          "https://*.unsplash.com",
+          // Cloudinary (uploaded images)
+          "https://res.cloudinary.com",
+          // Placeholder images
+          "https://placehold.co",
+          // Any other https image source (needed for user-uploaded avatars etc.)
+          "https:",
+        ],
         styleSrc:   ["'self'", "'unsafe-inline'"],
-        fontSrc:    ["'self'", "data:"],
+        fontSrc:    ["'self'", "data:", "https://fonts.gstatic.com"],
         objectSrc:  ["'none'"],
-        upgradeInsecureRequests:
-          process.env.NODE_ENV === "production" ? [] : null,
+        // Do NOT set upgradeInsecureRequests in dev — causes issues with http localhost
+        ...(process.env.NODE_ENV === "production" && {
+          upgradeInsecureRequests: [],
+        }),
       },
     },
     strictTransportSecurity:
