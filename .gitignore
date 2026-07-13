@@ -14,6 +14,7 @@ seed.js
 seedMenu.js
 seedUsers.js
 seedGallery.js
+migrateToAtlas.js
 
 # ── Uploads (user-generated files — not source code) ─────────────────────────
 uploads/*
